@@ -28,6 +28,14 @@ from .robot_vel_command_generator_cfg import RobotVelCommandGeneratorCfg
 from .trajectory_command_generator import TrajectoryCommandGenerator
 from .trajectory_command_generator_cfg import TrajectoryCommandGeneratorCfg
 
+from .navila_command_generator import NavilaCommandGenerator
+from .navila_command_generator_cfg import NavilaCommandGeneratorCfg
+
+from .return_to_path_command_generator import ReturnToPathController, ReturnToPathCfg
+from .hybrid_fsm import HybridFSM
+from .hybrid_command_generator import HybridCommandGenerator
+from .hybrid_command_generator_cfg import HybridCommandGeneratorCfg
+
 __all__ = ["PathFollowerCommandGeneratorCfg", "PathFollowerCommandGenerator",
            "PathFollowerCommandGeneratorGPTCfg", "PathFollowerCommandGeneratorGPT",
            "RLCommandGeneratorCfg", "RLCommandGenerator",
@@ -35,4 +43,8 @@ __all__ = ["PathFollowerCommandGeneratorCfg", "PathFollowerCommandGenerator",
            "LowLevelCommandGeneratorCfg", "LowLevelCommandGenerator",
            "GoalCommandGenerator", "GoalCommandGeneratorCfg",
            "RobotVelCommandGenerator", "RobotVelCommandGeneratorCfg",
-           "TrajectoryCommandGenerator", "TrajectoryCommandGeneratorCfg"]
+           "TrajectoryCommandGenerator", "TrajectoryCommandGeneratorCfg",
+           "NavilaCommandGenerator", "NavilaCommandGeneratorCfg",
+           "ReturnToPathController", "ReturnToPathCfg",
+           "HybridFSM",
+           "HybridCommandGenerator", "HybridCommandGeneratorCfg"]

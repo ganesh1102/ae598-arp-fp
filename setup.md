@@ -21,7 +21,7 @@ Before starting, ensure you have the following installed on your system:
 ### 1. Clone the Repository
 
 ```bash
-git clone <your-repository-url>
+git clone https://github.com/ganesh1102/ae598-arp-fp
 cd ae598-arp-fp
 ```
 
@@ -36,18 +36,6 @@ git submodule update --init --recursive
 This will fetch IsaacLab, NaVILA, and legged-loco repositories.
 
 ## Environment Setup
-
-### Option 1: Setup Both Environments
-
-Run the setup script to create both environments automatically:
-
-```bash
-# From the project root directory
-conda env create -f navila_env.yml
-conda env create -f isaaclab_env.yml
-```
-
-### Option 2: Setup Individually
 
 #### Setup NaVILA Environment
 
@@ -93,5 +81,3 @@ If `False` is returned for the first command, check:
 - Your CUDA/cuDNN installation
 - Your conda environment's PyTorch version matches your CUDA toolkit
 - Your GPU drivers are up to date
-
-

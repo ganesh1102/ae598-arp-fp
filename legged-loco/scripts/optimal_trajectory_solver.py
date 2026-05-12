@@ -398,6 +398,222 @@ def load_trajectory(path: str) -> ReferenceTrajectory:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# RRT* obstacle-avoiding planner  (used by no_vla baseline, Section V.e)
+# ─────────────────────────────────────────────────────────────────────────────
+
+import random as _random
+
+
+def _seg_to_point_dist(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
+    """Minimum distance from point p to segment [a, b]."""
+    ab = b - a
+    l2 = float(np.dot(ab, ab))
+    if l2 < 1e-12:
+        return float(np.linalg.norm(p - a))
+    t = float(np.clip(np.dot(p - a, ab) / l2, 0.0, 1.0))
+    return float(np.linalg.norm(p - (a + t * ab)))
+
+
+def _seg_collides(a: np.ndarray, b: np.ndarray,
+                  centers: list, radii: list) -> bool:
+    for c, r in zip(centers, radii):
+        if _seg_to_point_dist(np.asarray(c), a, b) < r:
+            return True
+    return False
+
+
+class _Node:
+    __slots__ = ("xy", "parent", "cost")
+
+    def __init__(self, xy: np.ndarray):
+        self.xy     = xy
+        self.parent = None
+        self.cost   = 0.0
+
+
+def _rrt_star(
+    start: np.ndarray,
+    goal:  np.ndarray,
+    centers: list,
+    radii:   list,
+    bounds,                 # (xmin, xmax, ymin, ymax)
+    max_iter: int = 4000,
+    step: float   = 0.35,
+    rewire_r: float = 1.1,
+    goal_bias: float = 0.12,
+    goal_tol: float  = 0.25,
+) -> np.ndarray:
+    """RRT* returning (K, 2) path from start to goal, or straight line on failure."""
+    nodes = [_Node(start.copy())]
+    xmin, xmax, ymin, ymax = bounds
+
+    def _nearest(q):
+        dists = [np.dot(n.xy - q, n.xy - q) for n in nodes]
+        return nodes[int(np.argmin(dists))]
+
+    def _near(q):
+        return [n for n in nodes if np.dot(n.xy - q, n.xy - q) < rewire_r ** 2]
+
+    best_goal_node = None
+
+    for _ in range(max_iter):
+        # Sample
+        if _random.random() < goal_bias:
+            q = goal.copy()
+        else:
+            q = np.array([_random.uniform(xmin, xmax),
+                          _random.uniform(ymin, ymax)])
+
+        nearest = _nearest(q)
+        d = np.linalg.norm(q - nearest.xy)
+        if d < 1e-9:
+            continue
+        new_xy = nearest.xy + min(d, step) * (q - nearest.xy) / d
+
+        # Bounds check
+        if not (xmin <= new_xy[0] <= xmax and ymin <= new_xy[1] <= ymax):
+            continue
+        # Collision check stem
+        if _seg_collides(nearest.xy, new_xy, centers, radii):
+            continue
+
+        # Find best parent among near nodes
+        best_parent = nearest
+        best_cost   = nearest.cost + np.linalg.norm(new_xy - nearest.xy)
+        for n in _near(new_xy):
+            c = n.cost + np.linalg.norm(new_xy - n.xy)
+            if c < best_cost and not _seg_collides(n.xy, new_xy, centers, radii):
+                best_cost   = c
+                best_parent = n
+
+        nn = _Node(new_xy)
+        nn.parent = best_parent
+        nn.cost   = best_cost
+        nodes.append(nn)
+
+        # Rewire
+        for n in _near(new_xy):
+            c = nn.cost + np.linalg.norm(n.xy - new_xy)
+            if c < n.cost and not _seg_collides(new_xy, n.xy, centers, radii):
+                n.parent = nn
+                n.cost   = c
+
+        # Goal check
+        if np.linalg.norm(new_xy - goal) < goal_tol:
+            if best_goal_node is None or nn.cost < best_goal_node.cost:
+                best_goal_node = nn
+
+    # Trace best path
+    if best_goal_node is None:
+        # Fallback: pick nearest node to goal
+        dists = [np.linalg.norm(n.xy - goal) for n in nodes]
+        best_goal_node = nodes[int(np.argmin(dists))]
+
+    path = []
+    n = best_goal_node
+    while n is not None:
+        path.append(n.xy.copy())
+        n = n.parent
+    path.reverse()
+    if np.linalg.norm(path[-1] - goal) > 1e-3:
+        path.append(goal.copy())
+    return np.array(path)
+
+
+def _shortcut_smooth(path: np.ndarray, centers: list, radii: list,
+                     n_tries: int = 500) -> np.ndarray:
+    """Random shortcut smoothing: repeatedly try to replace two edges with one."""
+    path = path.tolist()
+    for _ in range(n_tries):
+        if len(path) <= 2:
+            break
+        i = _random.randint(0, len(path) - 2)
+        j = _random.randint(i + 1, len(path) - 1)
+        a, b = np.array(path[i]), np.array(path[j])
+        if not _seg_collides(a, b, centers, radii):
+            path = path[:i + 1] + path[j:]
+    return np.array(path)
+
+
+def _path_to_trajectory(
+    path: np.ndarray,          # (K, 2)
+    start_heading: float,
+    v_max: float  = 0.5,
+    n_waypoints: int = 60,
+) -> ReferenceTrajectory:
+    """Convert a 2-D polyline to a ReferenceTrajectory with trapezoidal speed."""
+    # Arc lengths
+    diffs = np.linalg.norm(np.diff(path, axis=0), axis=1)   # (K-1,)
+    arc   = np.concatenate([[0.0], np.cumsum(diffs)])
+    L     = float(arc[-1])
+    if L < 1e-6:
+        L = 1e-6
+
+    # Resample uniformly along arc
+    s_new = np.linspace(0.0, L, n_waypoints + 1)
+    pos   = np.stack([np.interp(s_new, arc, path[:, i]) for i in range(2)], axis=1)
+
+    # Headings from consecutive waypoints
+    dp  = np.diff(pos, axis=0)                                # (N, 2)
+    hdg = np.arctan2(dp[:, 1], dp[:, 0])
+    hdg = np.concatenate([[start_heading], hdg])               # (N+1,)
+
+    # Trapezoidal speed: ramp up over 20%, cruise, ramp down over 20%
+    ramp_frac = 0.20
+    speeds = np.ones(n_waypoints + 1) * v_max
+    ramp_n = max(1, int(ramp_frac * n_waypoints))
+    speeds[:ramp_n]  = np.linspace(0.0, v_max, ramp_n)
+    speeds[-ramp_n:] = np.linspace(v_max, 0.0, ramp_n)
+    speeds = np.clip(speeds, 0.0, v_max)
+
+    # Times from arc length and speed (trapezoidal integration)
+    v_avg = 0.5 * (speeds[:-1] + speeds[1:])
+    ds    = np.diff(s_new)
+    dt    = np.where(v_avg > 1e-6, ds / v_avg, 0.0)
+    times = np.concatenate([[0.0], np.cumsum(dt)])
+
+    return ReferenceTrajectory(
+        positions=pos,
+        speeds=speeds,
+        headings=hdg,
+        times=times,
+        cost=float(times[-1]),
+        success=True,
+        message=f"RRT* path L={L:.2f}m T={float(times[-1]):.2f}s",
+    )
+
+
+def plan_obstacle_free_trajectory(
+    start:         np.ndarray,      # (2,) world xy
+    goal:          np.ndarray,      # (2,) world xy
+    start_heading: float,           # radians
+    obs_xy:        np.ndarray,      # (2,) obstacle centre
+    obs_radius:    float = 0.65,    # clearance radius [m] (box half-diag + robot)
+    n_waypoints:   int   = 60,
+    v_max:         float = 0.5,
+    rrt_max_iter:  int   = 4000,
+) -> ReferenceTrajectory:
+    """Plan a collision-free path via RRT* and return a ReferenceTrajectory.
+
+    Intended for the no_vla baseline: gives the robot an oracle detour around
+    the obstacle so we measure tracking quality, not detection quality.
+    """
+    start = np.asarray(start, dtype=float)
+    goal  = np.asarray(goal,  dtype=float)
+    obs   = np.asarray(obs_xy, dtype=float)
+
+    all_pts = np.stack([start, goal, obs])
+    margin  = max(3.0, obs_radius * 4)
+    bounds  = (all_pts[:, 0].min() - margin, all_pts[:, 0].max() + margin,
+               all_pts[:, 1].min() - margin, all_pts[:, 1].max() + margin)
+
+    path = _rrt_star(start, goal, [obs], [obs_radius], bounds,
+                     max_iter=rrt_max_iter)
+    path = _shortcut_smooth(path, [obs], [obs_radius])
+    return _path_to_trajectory(path, start_heading, v_max, n_waypoints)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Self-test / visualisation
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -407,7 +623,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Optimal trajectory solver demo")
     parser.add_argument("--start", nargs=3, type=float, default=[0.0, 0.0, 0.0],
                         metavar=("PX", "PY", "THETA"), help="Start [px py θ]")
-    parser.add_argument("--goal",  nargs="+", type=float, default=[5.0, 3.0],
+    parser.add_argument("--goal",  nargs="+", type=float, default=[10.0, 8.0],
                         metavar="VAL", help="Goal  [px py] or [px py θ_goal]")
     parser.add_argument("--N", type=int, default=60,  help="Collocation intervals")
     parser.add_argument("--plot", action="store_true", help="Show matplotlib plot")
